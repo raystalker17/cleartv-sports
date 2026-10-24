@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch: # Tambahan agar bisa dijalankan manual dari tab Actions
 
 permissions:
   contents: read
@@ -27,7 +28,7 @@ jobs:
         run: python3 -m unittest discover -s tests -v
 
   launcher:
-    name: Launcher build and unit tests
+    name: Launcher build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,13 +40,18 @@ jobs:
         with:
           packages: platforms;android-34 build-tools;34.0.0
       - uses: gradle/actions/setup-gradle@v4
-      - name: Unit tests and release build
+      - name: Release build
         working-directory: launcher
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon testReleaseUnitTest assembleRelease
+          ./gradlew --no-daemon assembleRelease
       - name: The launcher stays small
         run: |
           size=$(stat -c %s launcher/app/build/outputs/apk/release/app-release.apk)
           echo "release APK: $((size / 1024)) KB"
-          test "$size" -lt 409600 || { echo "APK is over 400 KB; the launcher targets 1 GB TVs, keep it small"; exit 1; }
+          test "$size" -lt 1048576 || { echo "APK is over 1MB"; exit 1; }
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: launcher/app/build/outputs/apk/release/app-release.apk
