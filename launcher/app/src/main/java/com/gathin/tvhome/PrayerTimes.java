@@ -16,34 +16,32 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.List;
 import java.util.Locale;
+import java.util.TimeZone;
 
-/**
- * Malaysian prayer times from JAKIM's e-Solat, for the zone a theme names ("prayer_zone": "TRG04").
- * The whole year is fetched once and kept on disk, so the row under the clock needs the network only
- * when a new year starts. Every failure leaves the row as it was; a failed fetch is tried again an
- * hour later.
- */
 final class PrayerTimes {
-    private static final String TAG = "TvHome.Solat";
+    private static final String TAG = "TvHome.Bola";
     private static final long RETRY_MS = 60L * 60 * 1000;
-    /** JAKIM's keys, in the order the row shows them. */
-    private static final String[] KEYS = {"fajr", "dhuhr", "asr", "maghrib", "isha"};
-    static final String[] NAMES = {"Subuh", "Zohor", "Asar", "Maghrib", "Isyak"};
-    /** Month abbreviations as e-Solat writes them in its dates ("21-Okt-2026"). */
-    private static final String[] MONTHS = {"jan", "feb", "mac", "apr", "mei", "jun", "jul", "ogo", "sep", "okt", "nov", "dis"};
-    private static final String[] HIJRI_MONTHS = {"Muharram", "Safar", "Rabiulawal", "Rabiulakhir", "Jamadilawal",
-            "Jamadilakhir", "Rejab", "Syaaban", "Ramadan", "Syawal", "Zulkaedah", "Zulhijjah"};
+    
+    // ID Liga: EPL (4328), Serie A (4332), Ligue 1 (4334), Eredivisie (4337), Liga 1 Indo (4362), Bundesliga (4331), UCL (4480)
+    private static final String[] LEAGUE_IDS = {"4328", "4332", "4334", "4337", "4362", "4331", "4480"};
+    
+    static String[] NAMES = {"Memuat...", "Memuat...", "Memuat...", "Memuat...", "Memuat..."};
 
-    /** One day's times, in minutes after midnight, and its Hijri date ("10 Jamadilawal 1448"). */
     static final class Day {
         final int[] minutes;
-        final String hijri;
+        final String info;
 
-        Day(int[] minutes, String hijri) {
+        Day(int[] minutes, String info) {
             this.minutes = minutes;
-            this.hijri = hijri;
+            this.info = info;
         }
     }
 
@@ -52,79 +50,144 @@ final class PrayerTimes {
 
     private static File file(Context ctx, String zone) {
         File base = Config.dir(ctx);
-        return base != null ? new File(base, "solat-" + zone + ".json") : null;
+        return base != null ? new File(base, "bola-" + zone + ".json") : null;
     }
 
-    /** The day of the cached year whose date is {@code key} ("21-10-2026"), or null. */
+    /** Cek data di cache dan urutkan berdasarkan jam tanding. */
     static Day day(Context ctx, String zone, String key) {
-        JSONArray days = read(file(ctx, zone));
-        for (int i = 0; days != null && i < days.length(); i++) {
-            JSONObject d = days.optJSONObject(i);
-            if (d == null || !key.equals(dateKey(d.optString("date")))) continue;
-            int[] m = new int[KEYS.length];
-            for (int k = 0; k < KEYS.length; k++) {
-                m[k] = minutes(d.optString(KEYS[k]));
-                if (m[k] < 0) return null;
+        JSONArray matches = read(file(ctx, zone));
+        if (matches == null || matches.length() == 0) return null;
+
+        List<JSONObject> matchList = new ArrayList<>();
+        try {
+            for (int i = 0; i < matches.length(); i++) {
+                matchList.add(matches.getJSONObject(i));
             }
-            return new Day(m, hijri(d.optString("hijri")));
+
+            // URUTKAN PERTANDINGAN DARI JAM PALING AWAL
+            Collections.sort(matchList, new Comparator<JSONObject>() {
+                @Override
+                public int compare(JSONObject a, JSONObject b) {
+                    String timeA = a.optString("strTimeWIB");
+                    String timeB = b.optString("strTimeWIB");
+                    return timeA.compareTo(timeB);
+                }
+            });
+
+            List<Integer> times = new ArrayList<>();
+            NAMES = new String[5]; // Reset
+
+            for (int i = 0; i < matchList.size() && i < 5; i++) {
+                JSONObject match = matchList.get(i);
+                String home = match.optString("strHomeTeam");
+                String away = match.optString("strAwayTeam");
+                String time = match.optString("strTimeWIB");
+                
+                // Singkat nama tim jika kepanjangan (opsional, max 15 huruf)
+                String shortHome = home.length() > 15 ? home.substring(0, 13) + ".." : home;
+                String shortAway = away.length() > 15 ? away.substring(0, 13) + ".." : away;
+
+                NAMES[i] = shortHome + " vs " + shortAway;
+                int mins = minutes(time);
+                times.add(mins);
+            }
+            
+            // Kalau pertandingan kurang dari 5, isi sisanya dengan strip
+            while (times.size() < 5) {
+                times.add(-1);
+                NAMES[times.size() - 1] = "-";
+            }
+            
+            int[] m = new int[5];
+            for (int i = 0; i < 5; i++) m[i] = times.get(i);
+            
+            return new Day(m, "Jadwal Bola");
+        } catch (Exception e) {
+            return null;
         }
-        return null;
     }
 
-    /** True when the cache has no entry for today and no fetch failed in the last hour. */
     static boolean due(Context ctx, String zone, String todayKey) {
         if (day(ctx, zone, todayKey) != null) return false;
         return System.currentTimeMillis() - prefs(ctx).getLong("tried_" + zone, 0) >= RETRY_MS;
     }
 
-    /** Downloads the year's times for the zone. Blocking: call from a background thread. */
     static boolean refresh(Context ctx, String zone) {
         prefs(ctx).edit().putLong("tried_" + zone, System.currentTimeMillis()).apply();
         File out = file(ctx, zone);
         if (out == null) return false;
+        
         try {
-            byte[] body = get("https://www.e-solat.gov.my/index.php?r=esolatApi/TakwimSolat&period=year&zone="
-                    + java.net.URLEncoder.encode(zone, "UTF-8"), 512 * 1024);
-            JSONArray days = new JSONObject(new String(body, StandardCharsets.UTF_8)).optJSONArray("prayerTime");
-            if (days == null || days.length() == 0) throw new IllegalStateException("no prayerTime");
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+            String today = sdf.format(new Date());
+
+            // Ambil SEMUA pertandingan sepak bola hari ini
+            String apiUrl = "https://www.thesportsdb.com/api/v1/json/123/eventsday.php?d=" + today + "&s=Soccer";
+            byte[] body = get(apiUrl, 2048 * 1024);
+            
+            JSONObject root = new JSONObject(new String(body, StandardCharsets.UTF_8));
+            JSONArray allEvents = root.optJSONArray("events");
+            
+            JSONArray filtered = new JSONArray();
+            if (allEvents != null) {
+                for (int i = 0; i < allEvents.length(); i++) {
+                    JSONObject ev = allEvents.getJSONObject(i);
+                    String idLeague = ev.optString("idLeague");
+                    String home = ev.optString("strHomeTeam").toLowerCase(Locale.US);
+                    String away = ev.optString("strAwayTeam").toLowerCase(Locale.US);
+                    
+                    boolean isTargetLeague = false;
+                    for (String lid : LEAGUE_IDS) {
+                        if (lid.equals(idLeague)) {
+                            isTargetLeague = true;
+                            break;
+                        }
+                    }
+                    
+                    // Cek jika Timnas Indonesia main (mengandung kata "indonesia")
+                    boolean isTimnasIndo = home.contains("indonesia") || away.contains("indonesia");
+
+                    if (isTargetLeague || isTimnasIndo) {
+                        String utcTime = ev.optString("strTime");
+                        ev.put("strTimeWIB", convertToWIB(utcTime));
+                        filtered.put(ev);
+                    }
+                }
+            }
+
             File tmp = new File(out.getPath() + ".new");
             try (OutputStream os = new FileOutputStream(tmp)) {
-                os.write(days.toString().getBytes(StandardCharsets.UTF_8));
+                os.write(filtered.toString().getBytes(StandardCharsets.UTF_8));
             }
-            if (!tmp.renameTo(out)) throw new IllegalStateException("rename failed");
-            Log.i(TAG, "saved " + days.length() + " days for " + zone);
+            if (!tmp.renameTo(out)) throw new IllegalStateException("Gagal simpan file");
+            
+            Log.i(TAG, "Berhasil simpan " + filtered.length() + " jadwal bola.");
             return true;
         } catch (Exception e) {
-            Log.w(TAG, "fetch failed for " + zone + ": " + e.getMessage());
+            Log.w(TAG, "Fetch gagal: " + e.getMessage());
             return false;
         }
     }
 
-    /** "21-10-2026" for a calendar day, the key {@link #dateKey} gives e-Solat's dates. */
+    private static String convertToWIB(String utcTime) {
+        try {
+            SimpleDateFormat sdf = new SimpleDateFormat("HH:mm:ss", Locale.US);
+            sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
+            Date date = sdf.parse(utcTime);
+            
+            SimpleDateFormat sdfWib = new SimpleDateFormat("HH:mm", Locale.US);
+            sdfWib.setTimeZone(TimeZone.getTimeZone("Asia/Jakarta"));
+            return sdfWib.format(date);
+        } catch (Exception e) {
+            return utcTime;
+        }
+    }
+
     static String key(Calendar c) {
         return String.format(Locale.ROOT, "%02d-%02d-%04d", c.get(Calendar.DAY_OF_MONTH),
                 c.get(Calendar.MONTH) + 1, c.get(Calendar.YEAR));
     }
 
-    /** "21-Okt-2026" (or "21-Oct-2026") to "21-10-2026"; "" when it is not a date. */
-    static String dateKey(String date) {
-        String[] p = date.trim().split("-");
-        if (p.length != 3 || p[1].length() < 3) return "";
-        String mon = p[1].substring(0, 3).toLowerCase(Locale.ROOT);
-        int m = -1;
-        for (int i = 0; i < MONTHS.length; i++) if (MONTHS[i].equals(mon)) m = i;
-        // English spellings where they differ from Malay.
-        if (m < 0) m = "mar".equals(mon) ? 2 : "may".equals(mon) ? 4 : "aug".equals(mon) ? 7
-                : "oct".equals(mon) ? 9 : "dec".equals(mon) ? 11 : -1;
-        if (m < 0) return "";
-        try {
-            return String.format(Locale.ROOT, "%02d-%02d-%04d", Integer.parseInt(p[0]), m + 1, Integer.parseInt(p[2]));
-        } catch (NumberFormatException e) {
-            return "";
-        }
-    }
-
-    /** "13:01:00" to 781; -1 when it is not a time. */
     static int minutes(String hms) {
         String[] p = hms.trim().split(":");
         if (p.length < 2) return -1;
@@ -136,33 +199,17 @@ final class PrayerTimes {
         }
     }
 
-    /** "1448-05-10" to "10 Jamadilawal 1448"; "" when it is not a date. */
-    static String hijri(String ymd) {
-        String[] p = ymd.trim().split("-");
-        if (p.length != 3) return "";
-        try {
-            int m = Integer.parseInt(p[1]);
-            if (m < 1 || m > 12) return "";
-            return Integer.parseInt(p[2]) + " " + HIJRI_MONTHS[m - 1] + " " + Integer.parseInt(p[0]);
-        } catch (NumberFormatException e) {
-            return "";
-        }
-    }
-
-    /** The index of the next prayer after {@code now} minutes, or -1 when Isyak has passed. */
     static int next(int[] minutes, int now) {
         for (int i = 0; i < minutes.length; i++) if (minutes[i] > now) return i;
         return -1;
     }
 
-    /** "dalam 12 min", "dalam 1 j 5 min", "dalam 2 j". */
     static String countdown(int minutesLeft) {
         int h = minutesLeft / 60, m = minutesLeft % 60;
         if (h == 0) return "dalam " + Math.max(1, m) + " min";
         return m == 0 ? "dalam " + h + " j" : "dalam " + h + " j " + m + " min";
     }
 
-    /** "05:49" in 24-hour time, "5:49" in 12-hour time (the clock beside it says AM or PM). */
     static String format(int minutes, boolean is24) {
         int h = minutes / 60, m = minutes % 60;
         if (is24) return String.format(Locale.ROOT, "%02d:%02d", h, m);
@@ -171,7 +218,7 @@ final class PrayerTimes {
     }
 
     private static JSONArray read(File f) {
-        if (f == null || !f.isFile() || f.length() > 512 * 1024) return null;
+        if (f == null || !f.isFile() || f.length() > 2048 * 1024) return null;
         try (InputStream in = new FileInputStream(f)) {
             byte[] buf = new byte[(int) f.length()];
             int n = 0, r;
@@ -194,7 +241,7 @@ final class PrayerTimes {
                 int r;
                 while ((r = in.read(buf)) > 0) {
                     out.write(buf, 0, r);
-                    if (out.size() > maxBytes) throw new IllegalStateException("response too large");
+                    if (out.size() > maxBytes) throw new IllegalStateException("Response too large");
                 }
                 return out.toByteArray();
             }
@@ -206,4 +253,4 @@ final class PrayerTimes {
     private static SharedPreferences prefs(Context ctx) {
         return ctx.getSharedPreferences("prayer_times", Context.MODE_PRIVATE);
     }
-}
+    }
