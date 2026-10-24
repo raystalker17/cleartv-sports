@@ -253,4 +253,4 @@ final class PrayerTimes {
     private static SharedPreferences prefs(Context ctx) {
         return ctx.getSharedPreferences("prayer_times", Context.MODE_PRIVATE);
     }
-    }
+}
