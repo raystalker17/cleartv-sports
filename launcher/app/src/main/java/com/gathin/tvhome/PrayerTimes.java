@@ -35,13 +35,14 @@ final class PrayerTimes {
     
     static String[] NAMES = {"Memuat...", "Memuat...", "Memuat...", "Memuat...", "Memuat..."};
 
+    // "hijri" dikembalikan agar UI tidak error
     static final class Day {
         final int[] minutes;
-        final String info;
+        final String hijri;
 
-        Day(int[] minutes, String info) {
+        Day(int[] minutes, String hijri) {
             this.minutes = minutes;
-            this.info = info;
+            this.hijri = hijri;
         }
     }
 
@@ -83,7 +84,6 @@ final class PrayerTimes {
                 String away = match.optString("strAwayTeam");
                 String time = match.optString("strTimeWIB");
                 
-                // Singkat nama tim jika kepanjangan (opsional, max 15 huruf)
                 String shortHome = home.length() > 15 ? home.substring(0, 13) + ".." : home;
                 String shortAway = away.length() > 15 ? away.substring(0, 13) + ".." : away;
 
@@ -92,7 +92,6 @@ final class PrayerTimes {
                 times.add(mins);
             }
             
-            // Kalau pertandingan kurang dari 5, isi sisanya dengan strip
             while (times.size() < 5) {
                 times.add(-1);
                 NAMES[times.size() - 1] = "-";
@@ -121,7 +120,6 @@ final class PrayerTimes {
             SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
             String today = sdf.format(new Date());
 
-            // Ambil SEMUA pertandingan sepak bola hari ini
             String apiUrl = "https://www.thesportsdb.com/api/v1/json/123/eventsday.php?d=" + today + "&s=Soccer";
             byte[] body = get(apiUrl, 2048 * 1024);
             
@@ -144,7 +142,6 @@ final class PrayerTimes {
                         }
                     }
                     
-                    // Cek jika Timnas Indonesia main (mengandung kata "indonesia")
                     boolean isTimnasIndo = home.contains("indonesia") || away.contains("indonesia");
 
                     if (isTargetLeague || isTimnasIndo) {
@@ -161,7 +158,6 @@ final class PrayerTimes {
             }
             if (!tmp.renameTo(out)) throw new IllegalStateException("Gagal simpan file");
             
-            Log.i(TAG, "Berhasil simpan " + filtered.length() + " jadwal bola.");
             return true;
         } catch (Exception e) {
             Log.w(TAG, "Fetch gagal: " + e.getMessage());
@@ -188,6 +184,12 @@ final class PrayerTimes {
                 c.get(Calendar.MONTH) + 1, c.get(Calendar.YEAR));
     }
 
+    static String dateKey(String date) {
+        String[] p = date.trim().split("-");
+        if (p.length != 3) return "";
+        return date.trim();
+    }
+
     static int minutes(String hms) {
         String[] p = hms.trim().split(":");
         if (p.length < 2) return -1;
@@ -197,6 +199,11 @@ final class PrayerTimes {
         } catch (NumberFormatException e) {
             return -1;
         }
+    }
+
+    // Dikembalikan agar file UI tidak error
+    static String hijri(String ymd) {
+        return ""; 
     }
 
     static int next(int[] minutes, int now) {
@@ -253,4 +260,4 @@ final class PrayerTimes {
     private static SharedPreferences prefs(Context ctx) {
         return ctx.getSharedPreferences("prayer_times", Context.MODE_PRIVATE);
     }
-}
+    }
